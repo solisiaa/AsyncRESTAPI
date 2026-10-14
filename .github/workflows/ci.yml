@@ -1,0 +1,79 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint-type-test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11"]
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: app
+          POSTGRES_PASSWORD: secret
+          POSTGRES_DB: tasks
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U app -d tasks"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=10
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd="redis-cli ping"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=10
+    env:
+      DATABASE_URL: postgresql+asyncpg://app:secret@localhost:5432/tasks
+      REDIS_URL: redis://localhost:6379/0
+      JWT_SECRET: ci-test-secret-key-min-32-chars-long
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[test]" 2>/dev/null || pip install \
+            "fastapi>=0.110,<0.122" "uvicorn[standard]>=0.29" \
+            "sqlalchemy>=2.0,<2.1" "asyncpg>=0.29" "aiosqlite>=0.19" \
+            "alembic>=1.13" "pydantic>=2.5" "pydantic-settings>=2.2" \
+            "pyjwt>=2.8" "passlib[bcrypt]>=1.7.4" "bcrypt>=4.1,<4.3" \
+            "redis>=5.0" "structlog>=24.1" "python-multipart>=0.0.9" \
+            "pytest>=8.0" "pytest-asyncio>=0.23" "httpx>=0.27" \
+            "fakeredis[async]>=2.20" "pytest-cov>=5.0" "ruff>=0.4" "mypy>=1.10"
+
+      - name: Ruff check
+        run: ruff check .
+
+      - name: Ruff format check
+        run: ruff format --check .
+
+      - name: Mypy strict
+        run: mypy app
+
+      - name: Run migrations
+        run: alembic upgrade head
+
+      - name: Run tests with coverage
+        run: pytest -v --cov=app --cov-report=term-missing --cov-fail-under=85
+
+      - name: Build Docker image
+        run: docker build -t task-analytics-api:ci .
